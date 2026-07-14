@@ -1,0 +1,17 @@
+# Node
+frontend/node_modules/
+frontend/dist/
+frontend/.env.local
+
+# PHP
+backend/vendor/
+backend/.env
+simulator/vendor/
+simulator/.env
+
+# Docker / env
+.env
+
+# OS
+.DS_Store
+Thumbs.db

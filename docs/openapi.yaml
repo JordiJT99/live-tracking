@@ -1,0 +1,423 @@
+openapi: 3.0.3
+
+info:
+  title: Live Tracking API
+  version: 1.0.0
+  description: |
+    API REST para la plataforma de monitorización de flotas en tiempo real.
+
+    Este archivo es el **contrato** entre frontend y backend.
+    Se escribe antes de implementar el backend (Spec Driven Development):
+    el frontend se construye contra este contrato en modo mock; el backend
+    lo implementa; ambos hablan el mismo idioma sin negociación posterior.
+
+servers:
+  - url: /api/v1
+    description: Prefijo de la API
+
+security:
+  - bearerAuth: []
+
+# ─────────────────────────────────────────
+# PATHS
+# ─────────────────────────────────────────
+
+paths:
+
+  # ── Auth ──────────────────────────────
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Iniciar sesión
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            example:
+              email: demo@demo.com
+              password: password
+      responses:
+        '200':
+          description: Token Bearer emitido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Cerrar sesión (revoca el token)
+      responses:
+        '204':
+          description: Token revocado
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Usuario autenticado
+      responses:
+        '200':
+          description: Datos del usuario en sesión
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ── Services ──────────────────────────
+
+  /services:
+    get:
+      tags: [Services]
+      summary: Listar servicios
+      description: Devuelve todos los servicios. El campo `polyline` se omite para aligerar la respuesta.
+      responses:
+        '200':
+          description: Lista de servicios
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ServiceSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /services/{id}:
+    get:
+      tags: [Services]
+      summary: Detalle de un servicio (incluye polyline)
+      parameters:
+        - $ref: '#/components/parameters/ServiceId'
+      responses:
+        '200':
+          description: Servicio completo con polyline codificada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceDetail'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /services/generate:
+    post:
+      tags: [Services]
+      summary: Generar servicios ficticios
+      description: |
+        El backend delega en el microservicio (DDD). Este genera N servicios
+        a partir del banco de rutas reales pregrabadas y los persiste en BD.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenerateRequest'
+            example:
+              count: 5
+      responses:
+        '201':
+          description: Servicios creados
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ServiceSummary'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ── Tracking ──────────────────────────
+
+  /tracking/latest:
+    get:
+      tags: [Tracking]
+      summary: Última posición de cada servicio activo
+      description: |
+        Devuelve exactamente un TrackingPoint por servicio — el más reciente.
+        Es el endpoint que alimenta los marcadores del mapa (polling cada 20 s).
+      responses:
+        '200':
+          description: Una posición por servicio
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TrackingPoint'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /services/{id}/tracking:
+    get:
+      tags: [Tracking]
+      summary: Histórico de posiciones de un servicio
+      parameters:
+        - $ref: '#/components/parameters/ServiceId'
+        - name: after_id
+          in: query
+          description: Devuelve solo registros con id > after_id (incremental)
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Lista cronológica de posiciones
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TrackingPoint'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ── Simulation ────────────────────────
+
+  /simulation/start:
+    post:
+      tags: [Simulation]
+      summary: Iniciar simulación GPS
+      description: El backend delega en el microservicio. Inicia los timers de posicionamiento.
+      responses:
+        '200':
+          description: Simulación iniciada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulationStatus'
+        '409':
+          description: La simulación ya está en marcha
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /simulation/stop:
+    post:
+      tags: [Simulation]
+      summary: Detener simulación GPS
+      responses:
+        '200':
+          description: Simulación detenida
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulationStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /simulation/status:
+    get:
+      tags: [Simulation]
+      summary: Estado actual de la simulación
+      responses:
+        '200':
+          description: Estado del run
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulationStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+# ─────────────────────────────────────────
+# COMPONENTS
+# ─────────────────────────────────────────
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Token emitido por Sanctum (Personal Access Token)
+
+  parameters:
+    ServiceId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+
+  # ── Schemas ───────────────────────────
+
+  schemas:
+
+    User:
+      type: object
+      required: [id, name, email]
+      properties:
+        id:
+          type: integer
+          example: 1
+        name:
+          type: string
+          example: Demo User
+        email:
+          type: string
+          format: email
+          example: demo@demo.com
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 6
+
+    LoginResponse:
+      type: object
+      required: [token, user]
+      properties:
+        token:
+          type: string
+          description: Bearer token para Authorization header
+          example: 1|abc123...
+        user:
+          $ref: '#/components/schemas/User'
+
+    # Service sin polyline (lista)
+    ServiceSummary:
+      type: object
+      required: [id, name, start_time, end_time]
+      properties:
+        id:
+          type: integer
+          example: 1
+        name:
+          type: string
+          example: Línea 1 – La Rambla
+        start_time:
+          type: string
+          format: date-time
+          example: '2025-01-13T07:00:00'
+        end_time:
+          type: string
+          format: date-time
+          example: '2025-01-13T17:30:00'
+
+    # Service con polyline (detalle)
+    ServiceDetail:
+      allOf:
+        - $ref: '#/components/schemas/ServiceSummary'
+        - type: object
+          required: [polyline]
+          properties:
+            polyline:
+              type: string
+              description: Ruta codificada en formato Google Encoded Polyline
+              example: '_p~iF~ps|U_ulLnnqC_mqNvxq`@'
+
+    TrackingPoint:
+      type: object
+      required: [service_id, latitude, longitude, created_at]
+      properties:
+        service_id:
+          type: integer
+          example: 1
+        latitude:
+          type: number
+          format: double
+          minimum: -90
+          maximum: 90
+          example: 41.3851
+        longitude:
+          type: number
+          format: double
+          minimum: -180
+          maximum: 180
+          example: 2.1734
+        created_at:
+          type: string
+          format: date-time
+          example: '2025-01-13T10:23:45Z'
+
+    GenerateRequest:
+      type: object
+      required: [count]
+      properties:
+        count:
+          type: integer
+          minimum: 1
+          maximum: 50
+          example: 5
+
+    SimulationStatus:
+      type: object
+      required: [running]
+      properties:
+        running:
+          type: boolean
+          example: true
+        service_count:
+          type: integer
+          nullable: true
+          description: Número de servicios siendo simulados (null si no hay run activo)
+          example: 5
+
+    # Error estándar de Laravel
+    ValidationError:
+      type: object
+      properties:
+        message:
+          type: string
+          example: The count field must be between 1 and 50.
+        errors:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+
+  # ── Responses ─────────────────────────
+
+  responses:
+    Unauthorized:
+      description: Token ausente o inválido
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              message:
+                type: string
+                example: Unauthenticated.
+
+    NotFound:
+      description: Recurso no encontrado
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              message:
+                type: string
+                example: No query results for model [Service] 42.
+
+    ValidationError:
+      description: Error de validación
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ValidationError'
