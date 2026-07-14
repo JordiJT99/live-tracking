@@ -1,6 +1,6 @@
 # Estado del proyecto — Progreso por fases
 
-Última actualización: **2026-07-14** (post-Fase 1: rutas OSRM + fix iconos)
+Última actualización: **2026-07-15** (post-Fase 2: backend completo + tests en verde)
 
 ---
 
@@ -10,7 +10,7 @@
 |---|---|---|
 | 0 | Esqueleto monorepo + scaffold frontend | ✅ Completada |
 | 1 | Frontend Vue 3 con dashboard completo y datos mock | ✅ Completada |
-| 2 | Backend Laravel 12 con Sanctum, migraciones y tests | ⏳ Pendiente |
+| 2 | Backend Laravel 12 con Sanctum, migraciones y tests | ✅ Completada |
 | 3 | Microservicio DDD con ReactPHP y simulación GPS | ⏳ Pendiente |
 | 4 | Integración Docker Compose + wiring end-to-end | ⏳ Pendiente |
 
@@ -75,24 +75,59 @@
 
 ---
 
-## ⏳ Fase 2 — Backend Laravel 12
+## ✅ Fase 2 — Backend Laravel 12
 
 **Objetivo:** API REST completa con Sanctum, migraciones, seeder y tests Pest.
 
-Pendiente de implementar. Plan detallado en [`../docs/01-genesis.md`](01-genesis.md) y en el archivo de plan completo.
+Implementada en `backend/`. El backend implementa estrictamente el contrato `docs/openapi.yaml` (Spec Driven Development).
 
-### Checklist previsto
+### Checklist
 
-- [ ] `laravel new backend` (PHP 8.4, Laravel 12, Sanctum)
-- [ ] Migraciones: `services`, `tracking`, `users` + índices
-- [ ] Seeder: usuario demo `demo@demo.com` / `password`
-- [ ] Modelos: `Service`, `TrackingPoint`, `User`
-- [ ] API Resources: `ServiceResource`, `TrackingPointResource`
-- [ ] Form Requests: `GenerateServicesRequest`
-- [ ] Controladores: `AuthController`, `ServiceController`, `TrackingController`, `SimulationController`
-- [ ] `SimulatorClient.php` — cliente HTTP interno al micro
-- [ ] Tests Pest: auth, listados, tracking/latest, validaciones, Http::fake() para el micro
-- [ ] `backend/Dockerfile`
+- [x] Estructura Laravel 12 en `backend/` con `composer.json` (PHP 8.4 + Sanctum + Pest)
+- [x] Migraciones: `users`, `personal_access_tokens`, `services`, `tracking` + índice compuesto `(service_id, id)`
+- [x] Seeder: usuario demo `demo@demo.com` / `password`
+- [x] Modelos: `User` (HasApiTokens), `Service`, `TrackingPoint` (tabla `tracking`, append-only)
+- [x] API Resources: `ServiceResource` (summary sin polyline / detail con polyline), `TrackingPointResource`
+- [x] Form Request: `GenerateServicesRequest` (count: integer, 1–50)
+- [x] Controladores: `AuthController`, `ServiceController`, `TrackingController`, `SimulationController`
+- [x] `Controller.php` base (Laravel 12 no lo genera automáticamente — añadido manualmente)
+- [x] `SimulatorClient.php` — cliente HTTP hacia el microservicio (`Http::fake()` en tests)
+- [x] **35 tests Pest en verde** (Auth ×8, Service ×12, Tracking ×9, Simulation ×6) — ejecutados en Docker
+- [x] `backend/Dockerfile` + `docker-entrypoint.sh`
+- [x] `config/services.php` con `SIMULATOR_URL`, `config/cors.php` con `FRONTEND_URL`
+- [x] Factories: `UserFactory`, `ServiceFactory`, `TrackingPointFactory`
+- [x] `phpunit.xml` configurado con SQLite `:memory:` para tests
+
+### Tests Pest — detalle por suite
+
+| Suite | Tests | Qué valida |
+|---|---|---|
+| `AuthTest` | 8 | login ok/ko, validación email+password, logout revoca token (usa `createToken()` real), `me` devuelve usuario, 401 sin token en rutas protegidas |
+| `ServiceTest` | 12 | 401 sin token, lista vacía, shape de `ServiceSummary` sin polyline, orden por id, detalle con polyline, 404 inexistente, delegación a SimulatorClient con `Http::fake()`, validación count (requerido / min 1 / max 50) |
+| `TrackingTest` | 9 | 401 sin token, array vacío sin datos, **última posición por servicio** (varios inserts → solo el más reciente), un punto por servicio con múltiples servicios, shape exacto del OpenAPI spec, histórico completo, paginación `after_id`, 404 servicio inexistente |
+| `SimulationTest` | 6 | 401 sin token en start/stop/status, delegación start/stop/status a SimulatorClient con `Http::fake()` |
+
+### Decisiones técnicas (SDD)
+
+- **SDD aplicado:** cada Resource, Controller y test valida el shape exacto del OpenAPI spec en `docs/openapi.yaml`. Los tests son la prueba de contrato entre el frontend y el backend.
+- **Bearer tokens** (Sanctum Personal Access Tokens) — CORS simple con un header; se descartaron cookies SPA por fricción en Docker con puertos distintos.
+- **`/tracking/latest`** usa `MAX(id) GROUP BY service_id` con índice `(service_id, id)` — index-scan sin full scan.
+- **SimulatorClient** delega generate/start/stop/status al microservicio DDD. En tests: `Http::fake()` para no depender del micro.
+- **`TrackingPoint.$timestamps = false`** — solo `created_at`, tabla append-only por diseño.
+- **SQLite `:memory:`** en tests — 0 dependencias externas, tests corren en <1s.
+- **Fix logout test:** `actingAs($user, 'sanctum')` no crea token real → `currentAccessToken()` retorna null. Se usa `createToken()->plainTextToken` + `withToken()` para tener un token Sanctum real que se puede revocar.
+
+### Para ejecutar
+
+```bash
+cd backend
+composer install
+cp .env.example .env
+php artisan key:generate
+php artisan migrate
+php artisan db:seed
+php artisan test      # 35 tests, todos en verde
+```
 
 ---
 

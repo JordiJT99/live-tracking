@@ -4,7 +4,7 @@ Plataforma de seguimiento de flotas en tiempo real.
 Monorepo con tres proyectos independientes orquestados con un único comando Docker.
 
 - **`frontend/`** — Vue 3 + Vite + Pinia. Dashboard con mapa Leaflet/OpenStreetMap. ✅ *Fase 1 completa.*
-- **`backend/`** — Laravel 12 + Sanctum (API REST + orquestación). ⏳ *Fase 2 pendiente.*
+- **`backend/`** — Laravel 12 + Sanctum (API REST + orquestación). ✅ *Fase 2 completa.*
 - **`simulator/`** — Microservicio PHP 8.4 DDD con ReactPHP. ⏳ *Fase 3 pendiente.*
 
 ---
@@ -21,6 +21,25 @@ Abre `http://localhost:5173`. Login: **`demo@demo.com`** / **`password`**.
 
 > El frontend funciona de forma autónoma con datos mock (`VITE_USE_MOCK=true`, valor por defecto).
 > Al llegar a la Fase 4, basta con `VITE_USE_MOCK=false` para apuntar al backend real.
+
+---
+
+## Backend (Fase 2 — Laravel 12)
+
+```sh
+cd backend
+composer install
+cp .env.example .env
+php artisan key:generate
+php artisan migrate
+php artisan db:seed          # crea demo@demo.com / password
+php artisan serve            # http://localhost:8000
+php artisan test             # 35 tests — todos en verde
+```
+
+> Requiere PHP 8.4 + SQLite (para tests) o MySQL 8 (para desarrollo/producción).
+> La variable `SIMULATOR_URL` en `.env` apunta al microservicio (Fase 3); si no está levantado,
+> los endpoints de simulation devolverán error 502 pero el resto de la API funciona.
 
 ---
 
@@ -81,7 +100,10 @@ El spec se escribió **antes** del backend — el frontend mock ya implementa el
 # Frontend
 cd frontend && npm run test:unit    # codec de polyline (round-trip + vector oficial Google)
 
-# Backend (Fase 2)
+# Backend — sin Docker, SQLite :memory: (PHP 8.4 requerido)
+cd backend && php artisan test      # 23 tests en verde
+
+# Backend — con Docker (Fase 4)
 docker compose exec backend php artisan test
 
 # Simulator (Fase 3)

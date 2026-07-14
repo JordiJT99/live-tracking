@@ -289,12 +289,58 @@ BUS_MODELS[(s.id - 1) % BUS_MODELS.length].toLowerCase().includes(q)
 
 ---
 
-## Decisiones pendientes (Fases 2-4)
+---
 
-Estas decisiones están definidas en el plan pero no implementadas todavía. Se documentarán aquí con más detalle cuando se implementen:
+## Backend Laravel 12 (Fase 2)
 
-- **`SimulatorClient` en Laravel** — cliente HTTP interno hacia el micro, con `Http::fake()` en los tests.
-- **Índice `(service_id, id)` en `tracking`** — para que `MAX(id) GROUP BY service_id` sea un index-scan.
+### `SimulatorClient` con `Http::fake()` en tests
+
+**Elección:** `SimulatorClient` usa `Illuminate\Support\Facades\Http` (no Guzzle directo) para hacer las llamadas al microservicio.
+
+**Por qué:** `Http::fake()` en los tests de Pest permite simular cualquier respuesta del micro sin que esté levantado. Los tests de `SimulationController` validan el proxy del backend sin dependencia real del microservicio — los tests corren en CI con `php artisan test` y SQLite `:memory:`, sin servicios externos.
+
+**Alternativa descartada:** inyectar un `GuzzleHttp\Client` mockeado. Requiere setup de mock-object más verbose y acopla los tests a un detalle de implementación.
+
+---
+
+### Índice compuesto `(service_id, id)` en `tracking`
+
+**Elección:** `$table->index(['service_id', 'id'])` en la migración `create_tracking_table`.
+
+**Por qué:** la query `MAX(id) GROUP BY service_id` es el corazón de `/tracking/latest`. Sin índice, es un full table scan de toda la tabla de tracking (append-only, crece sin límite). Con el índice compuesto `(service_id, id)`, MySQL puede hacer un "loose index scan" — lee el último id de cada grupo directamente del índice sin tocar los datos.
+
+**Alternativa descartada:** índice simple en `service_id`. No elimina el sort interno por `id`.
+
+---
+
+### `ServiceResource` con flag `withPolyline` (en lugar de dos Resource classes)
+
+**Elección:** un único `ServiceResource` con `$withPolyline = false` que se instancia vía `ServiceResource::summary($r)` o `ServiceResource::detail($r)`.
+
+**Por qué:** el OpenAPI spec define dos shapes distintos — `ServiceSummary` (sin polyline, para el listado) y un detalle con polyline. La alternativa canónica en Laravel sería dos Resource classes. Con el flag, el shape correcto se garantiza en un solo punto sin duplicar el código de serialización.
+
+**Impacto:** el listado (`GET /services`) omite polylines — no manda ~1 KB de datos por servicio en cada poll. El detalle (`GET /services/{id}`) los incluye — solo cuando el frontend necesita dibujar la ruta.
+
+---
+
+### SQLite `:memory:` para tests (sin MySQL en CI)
+
+**Elección:** `phpunit.xml` fuerza `DB_CONNECTION=sqlite` y `DB_DATABASE=:memory:` para todos los tests.
+
+**Por qué:** `php artisan test` debe correr en cualquier máquina con PHP 8.4 sin instalar MySQL. SQLite `:memory:` arranca en microsegundos, las migraciones se ejecutan por test suite y los datos son completamente aislados. Los 23 tests corren en <3 segundos.
+
+**Caveat:** SQLite no tiene `MAX(id) GROUP BY` con loose index scan — la query es correcta pero no usa el índice de la misma manera que MySQL. El comportamiento es idéntico; solo el plan de ejecución difiere. En producción MySQL usa el índice compuesto; en tests SQLite evalúa la subquery correctamente.
+
+---
+
+### Bearer tokens Sanctum (documentado en Fase 1, implementado en Fase 2)
+
+Decisión documentada arriba en "Sanctum con tokens Bearer". La implementación en Fase 2: `AuthController::login` crea el token con `$user->createToken('api')`, lo devuelve en `data.token`. El middleware `auth:sanctum` lo verifica en cada ruta protegida.
+
+---
+
+## Decisiones pendientes (Fases 3-4)
+
 - **Proxy nginx `/api` → backend** — para eliminar CORS de raíz en vez de configurarlo.
 - **`PolylineCodec` en PHP con tests round-trip** — la pieza más evaluable del dominio DDD.
 - **`GpsNoise` gaussiano acotado** — desplazamiento de ~±10m reproducible con seed.
