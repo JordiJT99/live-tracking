@@ -1,0 +1,83 @@
+services:
+  mysql:
+    image: mysql:8
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-root}
+      MYSQL_DATABASE: ${DB_DATABASE:-live_tracking}
+      MYSQL_USER: ${DB_USERNAME:-laravel}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-secret}
+    ports:
+      - "3307:3306"          # host:3307 → container:3306 (3306 avoided to dodge conflicts)
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_ROOT_PASSWORD:-root}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  backend:
+    build: ./backend
+    # migrate + seed run in the entrypoint; artisan serve gives us HTTP without nginx
+    command: php artisan serve --host=0.0.0.0 --port=8000
+    environment:
+      APP_KEY: ${APP_KEY:-base64:U7qLcZQsYz/yXA5iaOS1op/vI/IcrNQD1L5K776BWvQ=}
+      APP_ENV: local
+      APP_DEBUG: "true"
+      DB_CONNECTION: mysql
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_DATABASE: ${DB_DATABASE:-live_tracking}
+      DB_USERNAME: ${DB_USERNAME:-laravel}
+      DB_PASSWORD: ${DB_PASSWORD:-secret}
+      # This is a stateless token API — file/sync drivers need no extra tables
+      CACHE_STORE: file
+      SESSION_DRIVER: file
+      QUEUE_CONNECTION: sync
+      SIMULATOR_URL: http://simulator:8001
+    ports:
+      - "8000:8000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "8090:80"            # open http://localhost:8090 in the browser
+    depends_on:
+      - backend
+
+  # Adminer — lightweight web UI to browse the MySQL database.
+  # Not required by the app itself; included so a reviewer can inspect
+  # `services` / `tracking` rows without installing any DB client.
+  # Open http://localhost:8091 → server: mysql, user: laravel, pass: secret, db: live_tracking
+  adminer:
+    image: adminer:latest
+    ports:
+      - "8091:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: mysql
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  simulator:
+    build: ./simulator
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_DATABASE: ${DB_DATABASE:-live_tracking}
+      DB_USERNAME: ${DB_USERNAME:-laravel}
+      DB_PASSWORD: ${DB_PASSWORD:-secret}
+      SIMULATOR_PORT: 8001
+    ports:
+      - "8001:8001"          # exposed so you can drive it directly with curl while testing
+    depends_on:
+      mysql:
+        condition: service_healthy
+      backend:
+        condition: service_started
+
+volumes:
+  mysql-data:

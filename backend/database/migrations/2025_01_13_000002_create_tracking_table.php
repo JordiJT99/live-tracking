@@ -18,7 +18,7 @@ return new class extends Migration
             $table->decimal('longitude', 11, 7);
             $table->timestamp('created_at')->useCurrent();
 
-            // ponytail: composite index for MAX(id) GROUP BY service_id;
+            // composite index for MAX(id) GROUP BY service_id;
             // if the table grows to millions of rows, add a covering index on (service_id, id, lat, lon).
             $table->index(['service_id', 'id']);
         });

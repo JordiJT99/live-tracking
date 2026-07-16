@@ -14,7 +14,7 @@ class TrackingController extends Controller
      * GET /api/v1/tracking/latest
      * One TrackingPoint per service — the most recent one.
      * Uses MAX(id) GROUP BY service_id to avoid a full scan.
-     * ponytail: subquery index scan on (service_id, id); upgrade to covering index if table grows.
+     * Subquery index scan on (service_id, id); upgrade to covering index if table grows.
      */
     public function latest(): JsonResponse
     {

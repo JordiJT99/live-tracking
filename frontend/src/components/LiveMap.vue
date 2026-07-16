@@ -3,18 +3,62 @@ import { ref, watch, onMounted, onUnmounted } from 'vue'
 import type { Map as LeafletMap, Marker, Polyline, LatLngBounds } from 'leaflet'
 import { useServicesStore } from '../stores/services'
 import { useTrackingStore } from '../stores/tracking'
+import { getServiceTracking } from '../api/tracking'
+import { useToast } from '../composables/useToast'
 import { decode } from '../utils/polyline'
 
 let L: typeof import('leaflet')
 let map: LeafletMap
 const markers = new Map<number, Marker>()
 let routeLines: { remove(): void }[] = []
+let historyLines: { remove(): void }[] = []
 let boundsInitialized = false
 let resizeObserver: ResizeObserver
 const mapEl = ref<HTMLDivElement>()
 
 const services = useServicesStore()
 const tracking = useTrackingStore()
+const { add: toast } = useToast()
+
+// Draws the recorded GPS trail of a service (uses GET /services/{id}/tracking).
+async function showHistory(serviceId: number) {
+  historyLines.forEach(l => l.remove())
+  historyLines = []
+
+  const points = await getServiceTracking(serviceId)
+  if (points.length === 0) {
+    toast('Este servicio aún no tiene histórico', 'info')
+    return
+  }
+
+  // Show the recent breadcrumb trail. The full history loops over itself many
+  // times, so the whole thing overlaps and reads as noise — the last stretch is
+  // what's useful, and it still shows the real GPS wobble (append-only history).
+  const recent = points.slice(-80)
+  const coords = recent.map(p => [p.latitude, p.longitude] as [number, number])
+
+  const trail = L.polyline(coords, {
+    color: '#f59e0b', weight: 3, opacity: 0.9, lineJoin: 'round', lineCap: 'round',
+  }).addTo(map)
+  historyLines.push(trail)
+
+  // A single dot marks where the shown trail begins; the live marker is "now".
+  const start = coords[0]
+  if (start) {
+    historyLines.push(L.circleMarker(start, {
+      radius: 4, color: '#fff', fillColor: '#f59e0b', fillOpacity: 1, weight: 2,
+    }).addTo(map))
+  }
+
+  map.fitBounds(trail.getBounds() as LatLngBounds, { padding: [50, 50] })
+  const capped = points.length > recent.length
+  toast(
+    capped
+      ? `Recorrido reciente (${recent.length} de ${points.length} posiciones)`
+      : `Histórico: ${recent.length} posiciones registradas`,
+    'success',
+  )
+}
 
 function makeIcon(selected: boolean) {
   return L.divIcon({
@@ -77,7 +121,7 @@ function makePopupContent(serviceId: number) {
         </div>
       </div>
       <div class="bus-popup-footer">
-        <button class="bus-popup-btn btn-history">
+        <button class="bus-popup-btn btn-history" data-service-id="${serviceId}">
           <span class="material-symbols-outlined" style="font-size:16px">history</span> Historial
         </button>
         <button class="bus-popup-btn btn-clear" data-service-id="${serviceId}">
@@ -85,6 +129,23 @@ function makePopupContent(serviceId: number) {
         </button>
       </div>
     </div>`
+}
+
+// Briefly disables the CSS glide on a marker for one frame, so a fresh marker
+// or a loop wrap-around snaps into place instead of sliding across the map.
+function snapMarker(m: Marker) {
+  const el = m.getElement()
+  if (!el) return
+  el.style.transition = 'none'
+  requestAnimationFrame(() => {
+    const e = m.getElement()
+    if (e) e.style.transition = ''
+  })
+}
+
+function applySelection(m: Marker, selected: boolean) {
+  const pin = m.getElement()?.querySelector('.bus-pin')
+  if (pin) pin.classList.toggle('bus-pin--selected', selected)
 }
 
 function updateMarkers() {
@@ -96,7 +157,10 @@ function updateMarkers() {
 
     if (markers.has(serviceId)) {
       const m = markers.get(serviceId)!
-      m.setLatLng(latlng).setIcon(makeIcon(isSelected))
+      // A big jump means the bus looped back to the route start — snap it there
+      // instantly rather than sliding the marker across the whole city.
+      if (map.distance(m.getLatLng(), latlng) > 800) snapMarker(m)
+      m.setLatLng(latlng)
       m.setPopupContent(makePopupContent(serviceId))
     } else {
       const m = L.marker(latlng, { icon: makeIcon(isSelected) }).addTo(map)
@@ -106,6 +170,7 @@ function updateMarkers() {
         closeButton: false,
       })
       markers.set(serviceId, m)
+      snapMarker(m) // avoid an initial slide from the top-left corner
     }
   }
 
@@ -154,14 +219,34 @@ onMounted(async () => {
   resizeObserver = new ResizeObserver(() => map.invalidateSize())
   resizeObserver.observe(mapEl.value!)
 
+  // While the map pans/zooms (e.g. fitBounds after selecting a bus), Leaflet
+  // rewrites every marker's transform for the new view origin. The glide
+  // transition would animate that reposition, so the buses look like they slide
+  // across the map to catch up. Kill the transition during any map movement and
+  // restore it a frame after it settles — so only real sim ticks glide.
+  const freezeMarkers = () => map.getContainer().classList.add('map-moving')
+  const thawMarkers = () => {
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => map.getContainer().classList.remove('map-moving')),
+    )
+  }
+  map.on('movestart zoomstart', freezeMarkers)
+  map.on('moveend zoomend', thawMarkers)
+
   // Delegated popup button handlers
   map.getContainer().addEventListener('click', (e) => {
     const t = e.target as Element
     if (t.closest('.bus-popup-close')) { map.closePopup(); return }
+    const historyBtn = t.closest('.btn-history')
+    if (historyBtn) {
+      const id = parseInt(historyBtn.getAttribute('data-service-id') ?? '0')
+      if (id) showHistory(id)
+      return
+    }
     const clearBtn = t.closest('.btn-clear')
     if (clearBtn) {
       const id = parseInt(clearBtn.getAttribute('data-service-id') ?? '0')
-      if (id) { tracking.clearService(id); map.closePopup() }
+      if (id) { tracking.clearService(id); historyLines.forEach(l => l.remove()); historyLines = []; map.closePopup() }
     }
   })
 
@@ -171,7 +256,7 @@ onMounted(async () => {
   watch(() => tracking.positions, updateMarkers)
   watch(
     () => services.selectedId,
-    () => { for (const [id, m] of markers) m.setIcon(makeIcon(id === services.selectedId)) },
+    () => { for (const [id, m] of markers) applySelection(m, id === services.selectedId) },
   )
   watch(() => services.selectedPolyline, drawPolyline)
 
@@ -191,6 +276,18 @@ onUnmounted(() => {
 
 <style>
 /* not scoped — Leaflet DOM */
+
+/* Each 20 s tick moves the bus one discrete step. A short ease softens the
+   hop without dragging it out — so the bus reaches its new spot promptly,
+   freezes there between ticks, and stops on the spot when the simulation
+   ends (no 20 s glide, no sliding back toward the route start). */
+.leaflet-marker-icon { transition: transform 0.6s ease-out; }
+/* Never glide during a zoom animation — Leaflet drives the transform itself. */
+.leaflet-zoom-anim .leaflet-marker-icon { transition: none !important; }
+/* Never glide while the map pans/zooms (e.g. fitBounds on selecting a bus):
+   the markers would appear to slide across the map to their new pixel spot. */
+.leaflet-container.map-moving .leaflet-marker-icon { transition: none !important; }
+
 .bus-pin {
   width: 42px; height: 42px; border-radius: 50%;
   background: #fff; border: 2px solid #fff;

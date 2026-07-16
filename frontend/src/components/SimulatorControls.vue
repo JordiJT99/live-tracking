@@ -1,9 +1,8 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref } from 'vue'
 import { useServicesStore } from '../stores/services'
 import { useTrackingStore } from '../stores/tracking'
 import { useToast } from '../composables/useToast'
-import { ROUTE_CATALOG_SIZE } from '../fixtures'
 
 const services = useServicesStore()
 const tracking = useTrackingStore()
@@ -11,34 +10,14 @@ const { add: toast } = useToast()
 const count = ref(5)
 const generating = ref(false)
 
-const routesLeft = computed(() => ROUTE_CATALOG_SIZE - services.services.length)
-const catalogFull = computed(() => routesLeft.value <= 0)
-
-const BUS_MODELS = [
-  'Iveco Urbanway 12', 'Mercedes Citaro G', 'Solaris Urbino 18',
-  "MAN Lion's City", 'Volvo 7900 Hybrid', 'CAF Urbos 3',
-  'Alstom Aptis', 'Stadler TINA',
-]
-const busName = (id: number) =>
-  `BUS-${String(id).padStart(3, '0')} — ${BUS_MODELS[(id - 1) % BUS_MODELS.length]}`
-
 async function generate() {
   if (count.value < 1 || count.value > 50) return
-  if (catalogFull.value) {
-    toast(`Catálogo completo — máximo ${ROUTE_CATALOG_SIZE} servicios`, 'error')
-    return
-  }
   generating.value = true
   try {
     const created = await services.generate(count.value)
-    if (created.length === 0) {
-      toast(`No quedan rutas disponibles (máximo ${ROUTE_CATALOG_SIZE})`, 'error')
-    } else {
-      await tracking.refreshPositions()
-      for (const svc of created) {
-        toast(`Se ha generado el servicio del bus ${busName(svc.id)}`, 'success')
-      }
-    }
+    // New services get an initial position from the simulator, so refresh markers.
+    await tracking.refreshPositions()
+    toast(`${created.length} servicio(s) generado(s)`, 'success')
   } catch {
     toast('Error al generar servicios', 'error')
   } finally {
@@ -76,23 +55,18 @@ async function toggleSimulation() {
         v-model.number="count"
         type="number" min="1" max="50"
         class="sim-count-input"
-        :disabled="catalogFull"
-        title="Número de servicios a crear"
+        title="Número de servicios a crear (1-50 por lote)"
       />
       <button
         class="btn btn-ghost"
-        :disabled="generating || count < 1 || catalogFull"
+        :disabled="generating || count < 1"
         @click="generate"
       >
         <span v-if="generating" class="spinner" style="border-top-color: var(--primary); border-color: var(--outline-variant)" />
         <span v-else class="material-symbols-outlined" style="font-size:18px">add</span>
         Crear servicios
       </button>
-      <span v-if="catalogFull" class="catalog-full-msg">
-        <span class="material-symbols-outlined" style="font-size:14px">info</span>
-        Catálogo completo
-      </span>
-      <span v-else class="routes-left">{{ routesLeft }} rutas disponibles</span>
+      <span class="routes-left">Hasta 50 por lote</span>
     </div>
 
     <!-- Start simulation -->

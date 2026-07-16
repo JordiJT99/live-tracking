@@ -5,7 +5,7 @@ import { latestMockPositions, type TrackingPoint } from '../fixtures'
 export async function getLatestPositions(): Promise<TrackingPoint[]> {
   if (USE_MOCK) return latestMockPositions()
   const { data } = await http.get('/tracking/latest')
-  return data.data
+  return data
 }
 
 export async function getServiceTracking(
@@ -13,5 +13,5 @@ export async function getServiceTracking(
 ): Promise<TrackingPoint[]> {
   if (USE_MOCK) return []
   const { data } = await http.get(`/services/${serviceId}/tracking`)
-  return data.data
+  return data
 }

@@ -7,14 +7,10 @@ defineEmits<{ select: [id: number] }>()
 
 const tracking = useTrackingStore()
 
-const BUS_MODELS = [
-  'Iveco Urbanway 12', 'Mercedes Citaro G', 'Solaris Urbino 18',
-  "MAN Lion's City", 'Volvo 7900 Hybrid', 'CAF Urbos 3',
-  'Alstom Aptis', 'Stadler TINA',
-]
-
 function busId(id: number) { return `BUS-${String(id).padStart(3, '0')}` }
-function busModel(id: number) { return BUS_MODELS[(id - 1) % BUS_MODELS.length] }
+// The service name from the API already reads "BUS-001 <route> (<model>)".
+// Strip the redundant "BUS-XXX " prefix so the card shows the descriptive part.
+function serviceLabel(name: string) { return name.replace(/^BUS-\d+\s*/, '') }
 function fmt(iso: string) { return iso.slice(11, 16) }
 function isRunning(svc: Service) {
   return tracking.simulationRunning && tracking.positions.has(svc.id)
@@ -33,9 +29,9 @@ function isRunning(svc: Service) {
         <div class="card-icon" :class="{ 'card-icon--active': active }">
           <span class="material-symbols-outlined filled">directions_bus</span>
         </div>
-        <div>
+        <div class="card-text">
           <div class="card-id">{{ busId(service.id) }}</div>
-          <div class="card-model">{{ busModel(service.id) }}</div>
+          <div class="card-model" :title="service.name">{{ serviceLabel(service.name) }}</div>
         </div>
       </div>
       <div class="card-top-right">
@@ -76,7 +72,8 @@ function isRunning(svc: Service) {
 
 .card-top { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 12px; }
 .card-top-right { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
-.card-left { display: flex; align-items: center; gap: 12px; }
+.card-left { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; }
+.card-text { min-width: 0; }
 
 .card-icon {
   width: 40px; height: 40px; border-radius: 10px;
@@ -89,7 +86,10 @@ function isRunning(svc: Service) {
 
 .card-id { font-size: 15px; font-weight: 700; color: var(--on-surface); line-height: 1.2; }
 .card--active .card-id { color: var(--primary); }
-.card-model { font-size: 11px; color: var(--outline); margin-top: 2px; }
+.card-model {
+  font-size: 11px; color: var(--outline); margin-top: 2px;
+  max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 
 .badge { font-size: 10px; font-weight: 700; padding: 3px 9px; border-radius: 4px; text-transform: uppercase; letter-spacing: 0.04em; flex-shrink: 0; }
 .badge-active { background: #dcfce7; color: #166534; }

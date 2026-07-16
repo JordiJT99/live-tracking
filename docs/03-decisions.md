@@ -98,23 +98,22 @@ Este documento es el registro definitivo de cada decisión técnica relevante de
 
 ---
 
-### Límite de servicios y catálogo de rutas
+### Creación ilimitada de servicios sobre un catálogo de 16 rutas reales
 
-**Pregunta:** ¿Hay un máximo de servicios que se pueden crear? ¿Se puede hacer ilimitado?
+**Pregunta:** ¿Cuántos servicios se pueden crear? ¿Por qué las rutas son un catálogo fijo?
 
-**Sí, hay un límite — y es intencional.** El límite actual es **16 servicios** (= `BARCELONA_ROUTES.length` en `src/fixtures/routes.ts`). Cada servicio ocupa exactamente una ruta del catálogo, y una ruta nunca se repite en dos servicios simultáneos.
+**Se pueden crear servicios ilimitados** (en lotes de 1–50). Las rutas provienen de un catálogo de **16 trazados reales de Barcelona** pregrabados (`RouteCatalog` en el micro, `src/fixtures/routes.ts` en el frontend).
 
-**Por qué un límite:** la alternativa sin límite sería generar rutas de forma procedural (caminos aleatorios por el mapa). El problema: un random walk produce zigzags sobre edificios — visualmente pobre y poco creíble para una demo de gestión de flotas. Las rutas pregrabadas son trazados reales de Barcelona que se ven bien sobre el mapa, son deterministas y no requieren ninguna API externa.
+**Por qué un catálogo fijo y no rutas procedurales:** un random walk produce zigzags sobre edificios — visualmente pobre y poco creíble para una demo de flotas. Las rutas pregrabadas son trazados reales que se ven bien sobre el mapa, son deterministas y no requieren ninguna API externa en runtime.
 
-**Por qué 16 y no infinito:** el catálogo cubre los principales ejes de la ciudad (Diagonal, Gran Via, Passeig de Gràcia, Via Laietana, etc.). Para una demo, 16 servicios simultáneos en el mapa son más que suficientes. Ampliar el catálogo a 50 rutas sería trivial (añadir más arrays de coordenadas) pero no aporta valor demostrativo.
+**Cómo se consigue "ilimitado" con solo 16 rutas base** (en `ServiceFactory::createMany`, ver Fase 3):
+- El handler pasa un **offset** = número de servicios ya existentes (`ServiceRepositoryInterface::count()`), de modo que cada lote **continúa la secuencia** en lugar de reiniciar en la ruta 0. Sin esto, cada clic de "Crear servicios" repetía BUS-001/La Rambla — que era exactamente el bug reportado.
+- Más allá de las 16 rutas, la ruta se **invierte** en los ciclos impares (`array_reverse` de las coordenadas), etiquetada como `(inv)`. Así `BUS-017 La Rambla (inv)` recorre el mismo trazado en sentido contrario y no es visualmente idéntico a `BUS-001`.
+- Numeración, modelo de bus y ventana horaria se derivan del índice global → cada servicio es distinguible.
 
-**Cómo hacerlo ilimitado en producción:** en el microservicio real (Fase 3), la generación de rutas no usa un catálogo fijo sino que:
-- Tiene un banco más grande (~50 rutas pregrabadas)
-- Genera sub-tramos de rutas existentes (una ruta larga dividida en 3 servicios de mañana/tarde/noche)
-- Permite rutas inversas (mismo trazado en sentido contrario)
-- Con lo cual el número efectivo de servicios posibles es `rutas × 3 turnos × 2 direcciones` = ilimitado a efectos prácticos para la demo
+**Por qué esta solución y no un banco de 500 rutas:** duplicar el catálogo no aporta valor demostrativo y engorda el repo. El offset + inversión da variedad suficiente con código mínimo y determinista (testeable — ver `ServiceFactoryTest`).
 
-El límite del mock (`ROUTE_CATALOG_SIZE`) se notifica al usuario en tiempo real en el topbar con el contador "X rutas disponibles", y cuando llega a 0 el botón "Crear servicios" se deshabilita y aparece "Catálogo completo".
+**Evolución documentada:** para variedad realmente infinita, el `RouteCatalog` podría generar sub-tramos (una ruta larga partida en turnos mañana/tarde/noche) además de la inversión.
 
 ---
 
@@ -158,13 +157,23 @@ El spec OpenAPI (`docs/openapi.yaml`) documenta `POST /services/generate` con el
 
 ---
 
-### Marcadores de bus visibles inmediatamente tras generar servicios
+### Marcador visible en cuanto se crea el servicio (posición inicial)
 
-**Problema:** al generar servicios, el marcador del bus tardaba hasta 20s en aparecer (tiempo del siguiente poll de tracking).
+**Problema:** al crear un servicio, no aparecía ningún marcador en el mapa hasta iniciar la simulación. Un servicio recién creado no tiene ninguna fila en `tracking`, así que `/tracking/latest` no devuelve posición para él → sin marcador (solo la ruta al seleccionarlo). Confuso para el usuario.
 
-**Solución:** `SimulatorControls` llama a `tracking.refreshPositions()` justo después de que `services.generate()` devuelve, antes de mostrar los toasts. Una línea de código.
+**Solución:** `GenerateServicesHandler` (micro) escribe una **posición inicial** en el arranque de la ruta (`route->pointAtDistance(0)`) justo después de guardar cada servicio. Así `/tracking/latest` ya devuelve una posición y el marcador aparece de inmediato (estado "DISPONIBLE"). El frontend además llama a `tracking.refreshPositions()` tras generar para no esperar al siguiente poll.
 
-**Por qué así:** `refreshPositions()` ya existe en el tracking store; llamarla inmediatamente después de generar es el mínimo necesario. La alternativa (iniciar el poll más rápido o usar un watcher reactivo sobre `services`) sería más compleja sin beneficio adicional.
+**Por qué en el micro y no derivándolo en el frontend:** el micro es el único escritor de `tracking` (separación de responsabilidades). Que el bus "exista" en su punto de salida desde el instante de creación es semánticamente correcto (bus estacionado en cabecera) y mantiene una única fuente de verdad. La alternativa —que el frontend pintara un marcador ficticio desde la polyline sin fila en BD— rompería esa frontera.
+
+---
+
+### Botón "Historial" del popup → trazado GPS recorrido
+
+**Elección:** el botón "Historial" del popup del bus llama a `GET /services/{id}/tracking` y dibuja en el mapa el trazado real ya recorrido (línea ámbar + puntos), haciendo `fitBounds` a él.
+
+**Por qué:** demuestra el endpoint de histórico (que existía pero no se usaba desde la UI) y da valor real al operador: ver por dónde ha pasado un bus, no solo dónde está ahora. El manejador de clics delegado del mapa se amplió para cubrir `.btn-history` además de cerrar/limpiar.
+
+**Alternativa descartada:** abrir un panel/modal con una tabla de coordenadas. Menos útil visualmente y más código; el trazado sobre el mapa comunica mejor.
 
 ---
 
@@ -200,11 +209,35 @@ El spec OpenAPI (`docs/openapi.yaml`) documenta `POST /services/generate` con el
 
 ### Polling cada 20 s (no WebSockets / SSE)
 
-**Elección:** `setInterval` de 20 segundos en el store de Pinia (`tracking.ts`).
+**Elección:** `setInterval` en el store de Pinia (`tracking.ts`), intervalo de 20 s.
 
-**Por qué:** el enunciado dice literalmente "refrescar automáticamente las posiciones cada 20-30 segundos". Implementar WebSockets o SSE sería sobreingeniería no pedida que además requiere un contenedor adicional (Redis/pusher) o configuración de OWIN. Polling es la solución que pide el enunciado.
+**Por qué polling y no WebSockets:** el enunciado pide "refrescar automáticamente las posiciones cada 20-30 segundos". WebSockets o SSE serían sobreingeniería no pedida que además requiere un contenedor adicional (Redis/pusher) o más configuración. Polling es la solución que pide el enunciado.
+
+**Por qué 20 s (extremo bajo del rango):** el enunciado especifica 20-30 s, así que el mapa refresca a 20 s. El simulador, en cambio, escribe una posición nueva cada 5 s (su tick interno). El desacople es deliberado: la BD acumula un histórico fino (una fila cada 5 s, útil para el trazado de "Historial"), mientras que el mapa refresca al ritmo que pide el enunciado. En cada refresco el bus avanza ~4 puntos de golpe, así que el movimiento se sigue viendo, solo más espaciado.
 
 **Mejora futura documentada:** cambiar el polling por SSE costaría ~50 líneas en el backend y ~10 en el frontend. Se menciona en el README como evolución natural.
+
+---
+
+### Los buses circulan en bucle + animación suave del marcador
+
+**Elección:** cuando un `VehicleRun` llega al final de su ruta, **vuelve a empezar** (`fmod` sobre la distancia) en lugar de terminar. La simulación no se auto-detiene; corre hasta que el usuario pulsa "Detener". En el frontend, el marcador **desliza** (transición CSS `transform 20s linear`) hacia cada nueva posición en vez de teletransportarse.
+
+**Por qué el bucle:** una primera versión marcaba el `VehicleRun` como *finished* al cubrir la ruta y, cuando todos terminaban, el micro se detenía solo. En un panel de monitorización "en vivo" eso dejaba el mapa congelado a los pocos minutos, y el frontend seguía mostrando "Simulación activa" (bandera optimista). El bucle mantiene la flota siempre en movimiento — es lo que se espera de un *live tracking* — y coincide con el comportamiento del modo mock.
+
+**Por qué la animación:** con refresco a 20 s, entre poll y poll el mapa parecía congelado ("no se mueven los buses"). El marcador no se recrea en cada actualización (eso reiniciaba la posición); solo se hace `setLatLng`, y la transición CSS interpola el `transform`. Saltos grandes (cuando un bus reinicia la vuelta) se detectan por distancia y se hacen sin animación para no dibujar una raya cruzando la ciudad. Durante el zoom la transición se desactiva (Leaflet controla el `transform`).
+
+**Reconciliación de estado:** al cargar la página, el store lee `GET /simulation/status` y ajusta la bandera `simulationRunning` al estado real del micro, para que la UI no mienta tras recargar con la simulación en marcha.
+
+---
+
+### Respuestas de API sin envoltorio `{data: ...}`
+
+**Elección:** los controllers devuelven arrays/objetos JSON planos (`[...]`, `{...}`), no el envoltorio `{data: ...}` que Laravel pone por defecto al devolver `Resource::collection()`.
+
+**Por qué:** el OpenAPI spec define las respuestas como arrays/objetos directos. Devolver planos hace que el shape coincida exactamente con el contrato y con lo que el frontend mock ya esperaba.
+
+**Bug corregido al integrar:** el frontend leía `data.data` (asumiendo el envoltorio de Laravel), pero los controllers devuelven planos → las listas y marcadores llegaban `undefined`. Se corrigió el frontend para leer `data` directamente en `services.ts` y `tracking.ts`. Lección: en SDD, el spec manda; el cliente se alinea al spec, no a la convención del framework.
 
 ---
 
@@ -327,7 +360,7 @@ BUS_MODELS[(s.id - 1) % BUS_MODELS.length].toLowerCase().includes(q)
 
 **Elección:** `phpunit.xml` fuerza `DB_CONNECTION=sqlite` y `DB_DATABASE=:memory:` para todos los tests.
 
-**Por qué:** `php artisan test` debe correr en cualquier máquina con PHP 8.4 sin instalar MySQL. SQLite `:memory:` arranca en microsegundos, las migraciones se ejecutan por test suite y los datos son completamente aislados. Los 23 tests corren en <3 segundos.
+**Por qué:** `php artisan test` debe correr en cualquier máquina con PHP 8.4 sin instalar MySQL. SQLite `:memory:` arranca en microsegundos, las migraciones se ejecutan por test suite y los datos son completamente aislados. Los 35 tests corren en <3 segundos.
 
 **Caveat:** SQLite no tiene `MAX(id) GROUP BY` con loose index scan — la query es correcta pero no usa el índice de la misma manera que MySQL. El comportamiento es idéntico; solo el plan de ejecución difiere. En producción MySQL usa el índice compuesto; en tests SQLite evalúa la subquery correctamente.
 
@@ -339,8 +372,40 @@ Decisión documentada arriba en "Sanctum con tokens Bearer". La implementación 
 
 ---
 
-## Decisiones pendientes (Fases 3-4)
+## Microservicio DDD y ReactPHP (Fase 3)
 
-- **Proxy nginx `/api` → backend** — para eliminar CORS de raíz en vez de configurarlo.
-- **`PolylineCodec` en PHP con tests round-trip** — la pieza más evaluable del dominio DDD.
-- **`GpsNoise` gaussiano acotado** — desplazamiento de ~±10m reproducible con seed.
+### PHP puro (sin framework) + arquitectura DDD
+
+**Elección:** el micro es PHP 8.4 puro con capas `Domain` / `Application` / `Infrastructure`, sin framework.
+
+**Por qué:** DDD se demuestra mejor sin framework — si el micro fuera otro Laravel, el dominio quedaría contaminado de facades y el evaluador vería "dos Laravels". El dominio (codec de polyline, interpolación de ruta, ruido GPS) queda 100% testeable sin BD ni HTTP (28 tests PHPUnit puros). Dependencias hacia dentro: `Infrastructure → Application → Domain`; el dominio no importa PDO ni ReactPHP.
+
+### ReactPHP como runtime
+
+**Elección:** servidor HTTP + timer periódico en un único proceso ReactPHP (`bin/server.php`).
+
+**Por qué:** el micro necesita dos cosas a la vez — atender HTTP (`/generate`, `/simulation/*`) y ejecutar un bucle que genera posiciones. El modelo request-response clásico de PHP no permite un proceso residente. ReactPHP da ambos en un proceso con estado en memoria. Alternativa descartada: Swoole (requiere extensión C, complica el Dockerfile).
+
+**Timer siempre activo, guard por estado:** un único `addPeriodicTimer(5s)` arranca al boot; `TickHandler` es no-op mientras no hay simulación en curso. Más simple que acoplar el arranque/parada del timer a las transiciones de estado (una primera versión que lo acoplaba tenía un bug de tipos que impedía arrancar — se simplificó).
+
+### `PolylineCodec` propio con vector oficial de Google
+
+**Elección:** encode/decode del Google Encoded Polyline a mano (~40 líneas) con tests round-trip, incluyendo el ejemplo oficial de la documentación de Google (`_p~iF~ps|U…`).
+
+**Por qué:** es exactamente lo que evalúa la prueba. Una librería externa desaprovecharía la oportunidad de demostrarlo. Misma lógica que el codec del frontend (`src/utils/polyline.ts`) → coherencia verificable.
+
+### `GpsNoise` gaussiano acotado (Box-Muller)
+
+**Elección:** ruido gaussiano (transformada Box-Muller) acotado a ±25 m sobre cada coordenada.
+
+**Por qué:** simula la deriva real de un GPS. Acotado para que el bus no "salte" fuera de la calle. Testeado: 200 muestras siempre dentro del radio.
+
+---
+
+## Integración Docker (Fase 4)
+
+Las decisiones de contenedores (proxy nginx sin CORS, healthcheck de MySQL, multi-stage del frontend, `artisan serve`, drivers `file`/`sync`, Adminer, el fix del orden en `backend/Dockerfile`) están documentadas en detalle en [`05-docker.md`](05-docker.md).
+
+### `startSimulation` del frontend debía llamar a la API real
+
+**Bug corregido:** el store `tracking.ts` se escribió para modo mock — `startSimulation()` solo activaba una bandera y un timer con datos falsos. En modo real **no llamaba a `/simulation/start`**, así que el simulador nunca arrancaba y los buses no se movían. Se corrigió para invocar la API real (`api/simulation.ts`) y refrescar posiciones al instante. Lección: el código mock debe tener su equivalente real desde el diseño, no parchearse al final.

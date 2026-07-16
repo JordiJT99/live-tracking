@@ -1,0 +1,10 @@
+# Never ship host-installed deps/build output into the image build context.
+# The Dockerfile runs `npm ci` for Linux; copying a macOS node_modules over it
+# would clobber platform-specific binaries (esbuild/rollup) and break vite build.
+node_modules
+dist
+.env
+.env.*
+npm-debug.log*
+.vite
+.DS_Store

@@ -1,20 +1,5 @@
-# Estado del proyecto — Progreso por fases
+# Progreso por fases
 
-Última actualización: **2026-07-15** (post-Fase 2: backend completo + tests en verde)
-
----
-
-## Resumen rápido
-
-| Fase | Descripción | Estado |
-|---|---|---|
-| 0 | Esqueleto monorepo + scaffold frontend | ✅ Completada |
-| 1 | Frontend Vue 3 con dashboard completo y datos mock | ✅ Completada |
-| 2 | Backend Laravel 12 con Sanctum, migraciones y tests | ✅ Completada |
-| 3 | Microservicio DDD con ReactPHP y simulación GPS | ⏳ Pendiente |
-| 4 | Integración Docker Compose + wiring end-to-end | ⏳ Pendiente |
-
----
 
 ## ✅ Fase 0 — Esqueleto del repo
 
@@ -68,10 +53,10 @@
 - [x] Chips de filtro Activos/Inactivos funcionan con el estado de la simulación.
 - [x] Mock mode activo por defecto (`VITE_USE_MOCK=true`).
 - [x] Polylines siguen calles reales (OSRM), no líneas rectas entre puntos.
-- [x] Marcadores de bus aparecen inmediatamente al generar servicios (sin esperar el poll de 20s).
+- [x] Marcadores de bus aparecen inmediatamente al generar servicios (sin esperar al siguiente poll).
 - [x] Lista de servicios ordenada por id de bus (BUS-001, BUS-002…).
-- [x] Toast por cada bus generado: "Se ha generado el servicio del bus BUS-001 — Iveco Urbanway 12".
-- [x] Contador "X rutas disponibles" + estado "Catálogo completo" cuando se agotan las 16 rutas.
+- [x] Toast al generar servicios (en Fase 1 uno por bus; simplificado a un resumen en Fase 4).
+- [x] ~~Contador "X rutas disponibles" + "Catálogo completo" al agotar las 16 rutas~~ → **eliminado en Fase 4**: la creación es ilimitada (offset + rutas invertidas). Ver [03-decisions.md](03-decisions.md).
 
 ---
 
@@ -131,63 +116,173 @@ php artisan test      # 35 tests, todos en verde
 
 ---
 
-## ⏳ Fase 3 — Microservicio DDD (PHP 8.4 + ReactPHP)
+## ✅ Fase 3 — Microservicio DDD (PHP 8.4 + ReactPHP)
 
 **Objetivo:** microservicio que genera servicios ficticios y simula GPS con arquitectura DDD limpia.
 
-Pendiente de implementar.
+Implementado en `simulator/`. **Único escritor** de `services` y `tracking` (el backend solo lee).
 
-### Checklist previsto
+### Checklist
 
-- [ ] Scaffold Composer PSR-4, PHPUnit
-- [ ] `Domain/Model/Coordinate.php` — VO con validación de rangos
-- [ ] `Domain/Model/Route.php` — VO con interpolación `pointAtDistance(meters)`
-- [ ] `Domain/Model/Service.php` — Entidad
-- [ ] `Domain/Model/VehicleRun.php` — Agregado con `advance(seconds)`
-- [ ] `Domain/Service/PolylineCodec.php` — encode/decode con tests round-trip
-- [ ] `Domain/Service/GpsNoise.php` — ruido gaussiano acotado ~±10m
-- [ ] `Domain/Service/ServiceFactory.php` — genera N servicios desde `RouteCatalog`
-- [ ] `Domain/RouteCatalog.php` — banco de 16 polylines reales de Barcelona (mismas rutas OSRM del frontend)
-- [ ] Interfaces de repositorio en el dominio
-- [ ] Handlers de Application (Generate, Start, Stop, Tick)
-- [ ] Infrastructure: PDO repositories, ReactPHP HTTP server, timer
-- [ ] Tests unitarios del dominio (PHPUnit, sin BD)
-- [ ] `simulator/Dockerfile`
+- [x] Scaffold Composer PSR-4 (`Simulator\`), PHPUnit 11
+- [x] `Domain/Model/Coordinate.php` — VO con validación de rangos + `distanceTo()` (Haversine)
+- [x] `Domain/Model/Route.php` — VO con `pointAtDistance(metres)` (interpolación lineal + clamp)
+- [x] `Domain/Model/Service.php` — Entidad (id, name, TimeWindow, Route, polyline)
+- [x] `Domain/Model/VehicleRun.php` — Agregado con `advance(seconds)` → nueva posición
+- [x] `Domain/Service/PolylineCodec.php` — encode/decode Google Encoded Polyline (a mano)
+- [x] `Domain/Service/GpsNoise.php` — ruido gaussiano (Box-Muller) acotado a ±25m
+- [x] `Domain/Service/ServiceFactory.php` — genera N servicios (cicla el catálogo si N > 16)
+- [x] `Domain/RouteCatalog.php` — 16 rutas reales de Barcelona (mismas OSRM del frontend)
+- [x] Interfaces de repositorio en el dominio (`ServiceRepositoryInterface`, `TrackingRepositoryInterface`)
+- [x] Handlers de Application (Generate, Start, Stop, Tick) + `SimulationState` en memoria
+- [x] Infrastructure: `PdoServiceRepository`, `PdoTrackingRepository`, `Router` ReactPHP
+- [x] `bin/server.php` — bootstrap ReactPHP (event loop + HTTP server + timer periódico de 5s)
+- [x] **28 tests unitarios del dominio en verde (855 aserciones)** — PHPUnit, sin BD ni HTTP
+- [x] `simulator/Dockerfile` (php:8.4-cli-alpine) + `composer.lock` para builds reproducibles
+
+### Tests unitarios — detalle por suite
+
+| Suite | Tests | Qué valida |
+|---|---|---|
+| `PolylineCodecTest` | 5 | **Ejemplo oficial de Google** (`_p~iF~ps|U…`) encode+decode, round-trip Barcelona, punto único, coordenadas negativas (Sydney) |
+| `RouteTest` | 7 | ≥2 puntos obligatorio, `pointAtDistance` en extremos/medio, clamp por encima del total y negativo, longitud > 0 |
+| `GpsNoiseTest` | 3 | 200 muestras dentro del cap de 25m, coordenada resultante válida, produce variación real |
+| `VehicleRunTest` | 4 | `advance` devuelve Coordinate, arranca en el origen de la ruta, **circula en bucle** al cubrir la ruta completa (no se detiene), distancia acumulada crece |
+| `ServiceFactoryTest` | 7 | crea el count pedido, rutas válidas, nombres no vacíos, start < end, 422 fuera de rango (0 / 51), cicla catálogo con 17 |
+
+### Arquitectura DDD
+
+```
+Domain (0 dependencias) ← Application (casos de uso) ← Infrastructure (PDO, ReactPHP)
+```
+
+- **Dependencias hacia dentro:** el dominio no importa PDO ni ReactPHP; se testea con fakes en memoria.
+- **Value Objects:** `Coordinate` (valida rangos), `Route` (≥2 puntos). **Agregado:** `VehicleRun` (identidad + ciclo de vida).
+- **Repositorios como interfaces en el dominio**, implementación PDO en infraestructura.
+- **Estado en memoria** (`SimulationState`): qué corre y progreso de cada vehículo. Se pierde al reiniciar el contenedor (YAGNI documentado).
+- **Timer periódico único (5s)** en el bootstrap; `TickHandler` es no-op mientras no hay run activo → sin acoplar el timer a las transiciones de estado.
+
+### API interna (red Docker, sin auth)
+
+| Método | Ruta | Respuesta |
+|---|---|---|
+| GET | `/health` | `{status: "ok"}` |
+| POST | `/generate` | **Array top-level** de `ServiceSummary` (201) — coincide con OpenAPI |
+| POST | `/simulation/start` | `{running, service_count, message}` |
+| POST | `/simulation/stop` | `{running: false, service_count: null, message}` |
+| GET | `/simulation/status` | `{running, service_count}` |
+
+### Revisión en detalle — bugs encontrados y corregidos
+
+Tras escribir el código se hizo una **revisión de contrato contra el spec OpenAPI** (SDD) y una **prueba de integración real** (MySQL + simulador en Docker). Se encontraron y corrigieron 4 defectos:
+
+1. **`server.php` no arrancaba (crítico):** unas clases anónimas envolvían los handlers para acoplar el timer, pero se pasaban a `Router`, cuyo constructor tipa `StartSimulationHandler`/`StopSimulationHandler` → `TypeError` en construcción, antes de `$loop->run()`. **Fix:** el timer periódico arranca una vez al boot y `TickHandler` se guarda solo con `isRunning()`; `Router` recibe los handlers reales.
+2. **`/generate` devolvía `{services:[...]}`** en vez de un **array top-level** de `ServiceSummary` como exige el spec (el backend hace passthrough del body). **Fix:** el Router devuelve el array directamente.
+3. **`/simulation/status` emitía `active_vehicles`/`tick_count`** en vez del campo `service_count` del schema `SimulationStatus`. **Fix:** se emite `service_count` (y `tick_count` como extra aditivo de debug).
+4. **Formato de fecha y campo sobrante:** `/generate` devolvía `Y-m-d H:i:s` con `polyline`; el spec pide ISO `2026-07-15T06:00:00` y `ServiceSummary` sin polyline. **Fix:** formato `Y-m-d\TH:i:s`, sin polyline (la polyline vive en `ServiceDetail`, `GET /services/{id}`).
+
+### Prueba de integración ejecutada (evidencia)
+
+Con MySQL 8 + simulador en la misma red Docker:
+
+- `/health` → `{"status":"ok"}`
+- `POST /generate {count:3}` → 3 servicios persistidos, nombres con acentos correctos (Gràcia, Diagonal), fechas ISO
+- `POST /simulation/start` → `{running:true, service_count:3}`
+- Tras ~13s: **4 ticks × 3 servicios = 12 filas** en `tracking`, separadas 5s, posiciones avanzando por la ruta, precisión de 7 decimales
+- `POST /simulation/stop` → `running:false`; **inserts cesan** (21 filas estables 12s después) → append-only preservado
+- Validación: `count=0` y `count=51` → **422**; ruta desconocida → **404**; `count=17` (>16 rutas) → **201** (cicla catálogo)
+
+### Para ejecutar
+
+```bash
+cd simulator
+composer install
+vendor/bin/phpunit          # 28 tests, 855 aserciones, todas en verde
+```
+
+El servidor real (`php bin/server.php`) requiere MySQL; se levanta con Docker Compose en la Fase 4.
 
 ---
 
-## ⏳ Fase 4 — Integración Docker Compose
+## ✅ Fase 4 — Integración Docker Compose
 
 **Objetivo:** `docker compose up -d --build` levanta todo; frontend apunta a la API real.
 
-Pendiente de implementar.
+Implementado. Un único comando arranca los 5 contenedores (MySQL, backend, simulador, frontend, Adminer) y todo queda conectado.
 
-### Checklist previsto
+### Checklist
 
-- [ ] `docker-compose.yml` raíz: mysql → backend → simulator → frontend
-- [ ] Healthcheck MySQL + `depends_on: service_healthy`
-- [ ] Entrypoint del backend: espera BD → `migrate --force` → `db:seed --force`
-- [ ] Proxy nginx `/api` → backend (sin CORS)
-- [ ] Variables de entorno consolidadas (`.env.example` raíz)
-- [ ] Frontend: `VITE_USE_MOCK=false` + `VITE_API_URL` apunta al proxy
-- [ ] Prueba end-to-end desde clon limpio
-- [ ] README final con GIF o screenshot del dashboard funcionando
+- [x] `docker-compose.yml` raíz: mysql + backend + simulator + frontend + adminer
+- [x] Healthcheck MySQL + `depends_on: service_healthy` (backend/simulator/adminer esperan a que MySQL responda antes de arrancar)
+- [x] Entrypoint del backend: espera BD → `migrate --force` → `db:seed --force`
+- [x] Fix `backend/Dockerfile`: crea `bootstrap/cache` **antes** de `composer post-autoload-dump` (era un orden incorrecto que rompía el build)
+- [x] Proxy nginx `/api` → backend (mismo origen → sin CORS)
+- [x] `frontend/Dockerfile` multi-stage: node build → nginx sirviendo estáticos, con `VITE_USE_MOCK=false` fijado en el build
+- [x] Bugfixes al conectar frontend real con backend real:
+  - Frontend leía `data.data` (envoltorio Laravel Resources que estos controllers no usan) → cambio a `data` directamente
+  - `startSimulation()` en modo real solo activaba una bandera y ejecutaba el timer *mock*; no llamaba a `/simulation/start` → los buses no se movían. Corregido para invocar la API real.
+  - Refresco del mapa fijado en 20s (extremo bajo del rango 20-30s que pide el enunciado); el tick del simulador se mantiene en 5s para un histórico más fino en BD
+- [x] **Adminer** en el compose (puerto 8091) — inspector web de MySQL para el revisor
+- [x] Prueba end-to-end verificada en el navegador
+
+### Revisión final contra el enunciado (segunda pasada)
+
+- [x] El panel mostraba un `BUS-00X` sintético + un modelo hardcodeado (array duplicado en el front que ni coincidía con el del micro); el enunciado pide mostrar el `name`. Corregido: se muestra el `name` real de la API.
+- [x] Los buses **terminaban** la ruta y el micro se auto-detenía → mapa congelado y bandera "activa" mintiendo. Corregido: los buses **circulan en bucle** (nunca terminan), la simulación corre hasta "Detener".
+- [x] Con refresco a 20s el mapa parecía congelado entre polls. Corregido: **animación suave** del marcador (transición CSS, sin recrear el elemento en cada tick) → los buses "conducen" en vez de teletransportarse.
+- [x] El botón "Limpiar" del popup borraba el bus pero reaparecía al siguiente poll. Corregido con un set de IDs ignorados en el store.
+- [x] `GET /simulation/status` reconciliado al cargar la página → la bandera `simulationRunning` refleja el estado real del micro.
+- [x] El "Historial" dibujaba un punto por cada posición (cientos, superpuestos en varias vueltas). Corregido: rastro reciente limpio (últimas ~80 posiciones), línea suave.
+- [x] Limpieza de comentarios placeholder (`ponytail:`) en backend y frontend.
+
+### Bugs encontrados y corregidos al integrar
+
+Al conectar el frontend (hasta ahora en modo mock) con el backend + simulador reales, aparecieron dos bugs que estaban ocultos:
+
+1. **Los buses no se movían nunca (crítico).** La función `startSimulation()` del store `tracking.ts` estaba escrita para modo mock: solo activaba una bandera y arrancaba un `setInterval` con datos falsos. En modo real **jamás llamaba al endpoint `/simulation/start`**, por lo que el simulador nunca arrancaba, no se escribían filas nuevas en `tracking`, y los marcadores quedaban congelados. **Fix:** en modo real llama a la API y refresca inmediatamente.
+
+2. **Envoltorio de respuesta inexistente.** El frontend leía `data.data` esperando un envoltorio `{data: [...]}` (el que pone Laravel Resources por defecto), pero los controllers del backend devuelven arrays JSON planos por spec OpenAPI. Sin este fix, listas y marcadores llegaban `undefined`. **Fix:** leer `data` directamente en `services.ts` y `tracking.ts`.
+
+### Puertos expuestos
+
+| Puerto host | Servicio | Uso |
+|---|---|---|
+| **8090** | frontend (nginx) | **Dashboard principal** |
+| 8091 | adminer | Inspector web de MySQL |
+| 8000 | backend | API REST directa (para pruebas con `curl`) |
+| 8001 | simulator | API interna del micro (para pruebas sin auth) |
+| 3307 | mysql | Cliente MySQL nativo (TablePlus, DBeaver…) |
+
+> Se usan 3307/8090/8091 en lugar de los canónicos porque en la máquina de desarrollo había otros procesos (openmetadata) ocupando 3306/8080. Un evaluador con esos puertos libres puede modificar el `docker-compose.yml` si prefiere los estándar.
+
+### Adminer — inspector de la base de datos
+
+Adminer es un cliente MySQL web ligero (~50 MB) que se incluye en el compose para que **el revisor pueda inspeccionar `services` y `tracking` sin instalar nada**. Abre `http://localhost:8091` y usa:
+
+- Servidor: `mysql` · Usuario: `laravel` · Contraseña: `secret` · BD: `live_tracking`
+
+Ideal para ver en vivo cómo `tracking` va creciendo mientras la simulación corre.
+
+### Ajustes de UX tras probar en el navegador
+
+Tres correcciones sobre feedback de uso real:
+
+1. **El bus no aparecía al crear el servicio** (solo la ruta al seleccionarlo). Un servicio recién creado no tenía ninguna fila en `tracking`, así que `/tracking/latest` no devolvía posición → sin marcador. **Fix:** `GenerateServicesHandler` escribe una **posición inicial** en el arranque de la ruta al generar → el marcador aparece de inmediato (estado "DISPONIBLE").
+2. **Botón "Historial" del popup no hacía nada.** El manejador de clics del mapa solo cubría cerrar/limpiar. **Fix:** cableado a `showHistory()`, que llama a `GET /services/{id}/tracking` y **dibuja el trazado recorrido** (línea ámbar + puntos) haciendo zoom a él. Demuestra el endpoint de histórico.
+3. **Se creaban siempre las mismas rutas repetidas.** `ServiceFactory::createMany` usaba un índice local desde 0 en cada llamada → cada lote reiniciaba en BUS-001/La Rambla. **Fix:** el handler pasa un **offset** = nº de servicios existentes (`ServiceRepositoryInterface::count()`), de modo que la numeración y las rutas continúan la secuencia. Más allá de las 16 rutas del catálogo, la ruta se **invierte** en ciclos impares (`BUS-017 La Rambla (inv)`) para que las repeticiones no sean idénticas. Se quitó el tope de 16 en el frontend → creación ilimitada (hasta 50 por lote).
+
+### Prueba end-to-end verificada
+
+Flujo completo probado en el navegador:
+
+- `docker compose up -d --build` desde clon limpio → los 5 contenedores arrancan sin intervención
+- Login demo → dashboard carga con los servicios existentes en BD
+- Crear servicios (5) → filas nuevas en `services`, aparecen en la lista
+- Iniciar simulación → simulador emite `{running:true, service_count:N}`, `tracking` crece cada 5s
+- Marcadores en el mapa se actualizan cada 20s (refresco según enunciado) por rutas reales de Barcelona
+- Seleccionar bus → polyline dibujada; deseleccionar → solo marcadores
+- Detener → inserts en `tracking` cesan, histórico intacto (append-only)
 
 ---
 
-## Checklist de entrega final
 
-- [ ] Clon limpio + `docker compose up -d --build` levanta todo sin tocar nada
-- [ ] Login con `demo@demo.com` / `password` funciona
-- [ ] Generar N servicios → aparecen en lista con BUS-XXX, modelo, horario
-- [ ] Ejecutar simulación → marcadores aparecen y se mueven en ≤30s
-- [ ] Seleccionar servicio → solo su polyline; demás buses siguen moviéndose
-- [ ] Cambiar selección → polyline anterior desaparece; deseleccionar → solo marcadores
-- [ ] Detener simulación → inserts cesan
-- [ ] `tracking` conserva histórico completo (append-only, sin updates)
-- [ ] Los 7+ endpoints responden con códigos HTTP correctos (401 sin token)
-- [ ] Tests en verde: `php artisan test` (backend), `phpunit` (simulator), `npm run test` (frontend)
-- [ ] 4 commits-hito presentes, en orden, con mensajes Conventional Commits
-- [ ] README verificado paso a paso desde clon limpio
-- [ ] Repo público accesible en incógnito
-- [ ] `.gitignore` correcto (sin `node_modules`, `vendor`, `dist`, `.env`)

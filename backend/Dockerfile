@@ -30,12 +30,16 @@ RUN composer install --no-dev --no-scripts --optimize-autoloader --no-interactio
 # Copy app source
 COPY . .
 
+# Ensure the framework's writable dirs exist and are writable *before* any
+# artisan command runs (package:discover writes to bootstrap/cache).
+RUN mkdir -p bootstrap/cache \
+        storage/framework/cache storage/framework/sessions storage/framework/views \
+        storage/logs && \
+    chown -R www-data:www-data storage bootstrap/cache && \
+    chmod -R 775 storage bootstrap/cache
+
 # Run post-install scripts now that source is present
 RUN composer run-script post-autoload-dump
-
-# Storage permissions
-RUN chown -R www-data:www-data storage bootstrap/cache && \
-    chmod -R 775 storage bootstrap/cache
 
 # Entrypoint: wait for DB → migrate → seed → start PHP-FPM
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh

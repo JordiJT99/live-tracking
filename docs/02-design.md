@@ -37,6 +37,16 @@ También se generó el mockup de:
 - La pantalla de **login** (dos paneles: marca/features a la izquierda, formulario a la derecha)
 - El **popup de bus** en el mapa (cabecera azul con BUS-XXX, campos de estado/ventana horaria/GPS)
 
+## Cómo se pasó el diseño al código
+
+El flujo fue el siguiente:
+
+1. Stitch generó el mockup y ofrece un botón **"Export"** / **"Download ZIP"** con el HTML y CSS del diseño.
+2. Se descargó ese ZIP y se descomprimió **directamente dentro de la carpeta del proyecto** (en la raíz de `live-tracking/`).
+3. Con el ZIP accesible en disco, Claude Code pudo leer los archivos, extraer la paleta de colores, los tokens CSS, la jerarquía de componentes y la estructura de bloques, y trasladarlos fielmente a los componentes Vue sin necesidad de hacer capturas de pantalla ni copiar CSS a mano.
+
+Este paso es clave: Stitch genera HTML/CSS real, y ponerlo en el proyecto hace que Claude Code lo trate como una fuente de verdad más, igual que el OpenAPI spec o las fixtures de rutas. Sin este paso, el "traspaso" del diseño al código se haría a ojo, con riesgo de desvíos visuales.
+
 ## Iteraciones sobre el mockup
 
 Stitch generó un primer mockup válido. Se iteró en cuatro puntos:

@@ -1,0 +1,8 @@
+# Keep host-installed deps and local env out of the build context.
+# The Dockerfile runs `composer install` inside the image.
+vendor
+.env
+.env.*
+*.log
+.phpunit.result.cache
+.DS_Store
